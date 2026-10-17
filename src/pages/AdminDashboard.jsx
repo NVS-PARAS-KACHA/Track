@@ -393,6 +393,16 @@ export const AdminDashboard = ({ onNavigateVisitor }) => {
             </div>
 
             <button
+              onClick={onNavigateVisitor}
+              className="admin-logout-icon-btn"
+              style={{ color: '#0284c7' }}
+              title="Open Candidate Job Portal"
+              aria-label="Open Candidate Job Portal"
+            >
+              <ExternalLink size={18} />
+            </button>
+
+            <button
               onClick={logout}
               className="admin-logout-icon-btn"
               title="Sign Out"

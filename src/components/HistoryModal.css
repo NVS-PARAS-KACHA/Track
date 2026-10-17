@@ -177,3 +177,53 @@
   background: #fef3c7;
   color: #b45309;
 }
+
+@media (max-width: 768px) {
+  .history-modal-backdrop {
+    padding: 10px;
+  }
+
+  .history-modal-card {
+    border-radius: 18px;
+    max-height: 94vh;
+  }
+
+  .history-modal-header {
+    padding: 12px 14px;
+  }
+
+  .history-modal-title {
+    font-size: 15px;
+  }
+
+  .history-modal-subtitle {
+    font-size: 11px;
+  }
+
+  .history-modal-body {
+    padding: 14px;
+    gap: 14px;
+  }
+
+  .history-stats-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .history-stat-box {
+    padding: 10px 12px;
+  }
+
+  .history-stat-val {
+    font-size: 15px;
+  }
+
+  .history-table-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .history-table {
+    min-width: 520px;
+  }
+}
