@@ -1,5 +1,7 @@
 # TechPulse IT Services — Job Portal & Live Telemetry Dashboard
 
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FNVS-PARAS-KACHA%2FTrack)
+
 A modern, responsive web application featuring a high-conversion enterprise **Job Portal** for **TechPulse IT Services** and a secure, real-time **Administrator Location Dashboard**.
 
 ---
