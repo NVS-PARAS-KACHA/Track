@@ -1,9 +1,9 @@
 import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
-import { Maximize2, RotateCcw } from 'lucide-react';
+import { RotateCcw } from 'lucide-react';
 import './AdminMap.css';
 
-// Fix for default Leaflet icon paths in bundlers if needed
+// Fix for default Leaflet icon paths in bundlers
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
@@ -37,7 +37,7 @@ export const AdminMap = ({
   const defaultCenter = [18.5204, 73.8567];
   const defaultZoom = 12;
 
-  // Initialize Map
+  // Initialize Map once
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
@@ -54,7 +54,6 @@ export const AdminMap = ({
         attribution: '© OpenStreetMap contributors',
       }).addTo(map);
 
-      // Attribution
       L.control
         .attribution({ position: 'bottomright' })
         .addAttribution('Leaflet | © OpenStreetMap')
@@ -71,7 +70,7 @@ export const AdminMap = ({
     };
   }, []);
 
-  // Update Markers when sessions change
+  // Update Markers whenever sessions change
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -81,51 +80,105 @@ export const AdminMap = ({
     markersRef.current.clear();
 
     const bounds = L.latLngBounds([]);
+    let validMarkerCount = 0;
+    let singleLatLng = null;
 
     sessions.forEach((session) => {
       const loc = session.latestUpdate;
-      if (!loc || typeof loc.latitude !== 'number' || typeof loc.longitude !== 'number') return;
+      if (!loc) return;
 
-      const latLng = [loc.latitude, loc.longitude];
+      const lat = parseFloat(loc.latitude);
+      const lng = parseFloat(loc.longitude);
+
+      if (isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) return;
+
+      const latLng = [lat, lng];
       bounds.extend(latLng);
+      validMarkerCount++;
+      singleLatLng = latLng;
 
       const color = session.color || '#16a34a';
       const timeStr = getRelativeTime(loc.recorded_at);
+      const googleMapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
 
-      // Custom HTML Marker matching the screenshot design
+      // Custom Clean HTML Marker Pin with pulsing dot
       const customIcon = L.divIcon({
         className: 'custom-leaflet-div-icon',
         html: `
-          <div class="map-marker-container">
+          <div class="map-marker-wrapper">
             <div class="map-marker-pill">
-              <span class="map-marker-dot" style="background-color: ${color};"></span>
-              <span>${session.display_name}</span>
+              <span class="map-marker-pulse-dot" style="background-color: ${color};"></span>
+              <span class="map-marker-name">${session.display_name || 'Candidate'}</span>
               <span class="map-marker-time">${timeStr}</span>
             </div>
-            <div class="map-marker-pin-body" style="background-color: ${color};"></div>
+            <div class="map-marker-pin" style="background-color: ${color};">
+              <div class="map-marker-pin-inner"></div>
+            </div>
           </div>
         `,
-        iconSize: [120, 50],
-        iconAnchor: [60, 50],
+        iconSize: [160, 56],
+        iconAnchor: [80, 56],
+        popupAnchor: [0, -56],
       });
 
       const marker = L.marker(latLng, { icon: customIcon }).addTo(map);
 
-      // Popup Content
+      // Hover Tooltip with user name & exact coordinates
+      marker.bindTooltip(
+        `<div style="font-weight:700;">${session.display_name || 'Candidate'}</div><div style="font-family:monospace;font-size:10px;margin-top:2px;">${lat.toFixed(5)}, ${lng.toFixed(5)}</div>`,
+        {
+          direction: 'top',
+          offset: [0, -56],
+          className: 'custom-leaflet-tooltip',
+        }
+      );
+
+      // Detailed On-Click Popup
       const popupHtml = `
         <div class="map-popup-card">
           <div class="map-popup-header">
-            <span class="map-popup-title">${session.display_name} (${session.id})</span>
+            <div>
+              <div class="map-popup-title">${session.display_name || 'Candidate'}</div>
+              <div class="map-popup-id">Session: ${session.id}</div>
+            </div>
             <span class="map-popup-badge ${loc.is_demo ? 'demo' : 'live'}">
-              ${loc.is_demo ? 'Demo' : 'Live GPS'}
+              ${loc.is_demo ? 'Demo' : '🟢 Live GPS'}
             </span>
           </div>
-          <div class="map-popup-address">${loc.resolved_address || 'Pune Area'}</div>
-          <div class="map-popup-coords">${loc.latitude.toFixed(4)}, ${loc.longitude.toFixed(4)}</div>
-          <div class="map-popup-meta">
-            <span>Accuracy: ±${Math.round(loc.accuracy_meters || 10)}m</span>
-            <span>${timeStr}</span>
+
+          <div class="map-popup-field">
+            <span class="map-field-label">Address:</span>
+            <span class="map-field-value">${loc.resolved_address || 'Resolving Address...'}</span>
           </div>
+
+          <div class="map-popup-coords-box">
+            <div class="map-coords-text">
+              <strong>${lat.toFixed(6)}, ${lng.toFixed(6)}</strong>
+            </div>
+            <a href="${googleMapsUrl}" target="_blank" rel="noopener noreferrer" class="map-coords-link" title="Open coordinates in Google Maps">
+              Google Maps ↗
+            </a>
+          </div>
+
+          <div class="map-popup-grid">
+            <div class="map-grid-item">
+              <span class="map-grid-label">Accuracy</span>
+              <span class="map-grid-val">±${Math.round(loc.accuracy_meters || 10)}m</span>
+            </div>
+            <div class="map-grid-item">
+              <span class="map-grid-label">Device</span>
+              <span class="map-grid-val">${session.device_info || 'Mobile/Web'}</span>
+            </div>
+            <div class="map-grid-item">
+              <span class="map-grid-label">Recorded</span>
+              <span class="map-grid-val">${timeStr}</span>
+            </div>
+            <div class="map-grid-item">
+              <span class="map-grid-label">Status</span>
+              <span class="map-grid-val" style="color: #16a34a; font-weight: 700;">${session.status || 'active'}</span>
+            </div>
+          </div>
+
           <button id="btn-hist-${session.id}" class="map-popup-btn">
             View Location History
           </button>
@@ -146,23 +199,30 @@ export const AdminMap = ({
       markersRef.current.set(session.id, marker);
     });
 
-    // Auto fit bounds if multiple sessions exist
-    if (bounds.isValid() && !focusLocation) {
-      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+    // Auto-fit bounds or center
+    if (!focusLocation) {
+      if (validMarkerCount === 1 && singleLatLng) {
+        map.setView(singleLatLng, 15, { animate: true });
+      } else if (validMarkerCount > 1 && bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+      }
     }
   }, [sessions]);
 
-  // Focus specific location when triggered by external action (table row click)
+  // Focus specific location when row clicked
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || !focusLocation) return;
 
-    const { latitude, longitude, sessionId } = focusLocation;
-    map.flyTo([latitude, longitude], 15, { duration: 1.2 });
+    const lat = parseFloat(focusLocation.latitude);
+    const lng = parseFloat(focusLocation.longitude);
+    if (isNaN(lat) || isNaN(lng)) return;
 
-    if (sessionId && markersRef.current.has(sessionId)) {
+    map.flyTo([lat, lng], 15, { duration: 1.2 });
+
+    if (focusLocation.sessionId && markersRef.current.has(focusLocation.sessionId)) {
       setTimeout(() => {
-        const marker = markersRef.current.get(sessionId);
+        const marker = markersRef.current.get(focusLocation.sessionId);
         marker?.openPopup();
       }, 1250);
     }
@@ -180,7 +240,7 @@ export const AdminMap = ({
         <button
           onClick={handleRecenter}
           className="map-overlay-btn"
-          title="Recenter Map to Pune"
+          title="Recenter Map"
         >
           <RotateCcw size={14} />
           Reset View

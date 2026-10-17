@@ -1,17 +1,8 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
-// Local storage keys for real-time live sessions
+// Local storage keys for instant local fallback
 const SESSIONS_KEY = 'techpulse_realtime_sessions_v2';
 const UPDATES_KEY = 'techpulse_realtime_updates_v2';
-const RETENTION_KEY = 'techpulse_retention_days';
-
-// Clean up any old mock data from previous version
-try {
-  localStorage.removeItem('monkeyonki_sessions_v1');
-  localStorage.removeItem('monkeyonki_updates_v1');
-} catch (e) {
-  // ignore
-}
 
 // Helpers for localStorage
 function getStoredSessions() {
@@ -26,7 +17,9 @@ function getStoredSessions() {
 function setStoredSessions(sessions) {
   try {
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
-    window.dispatchEvent(new Event('realtime_location_sync'));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('realtime_location_sync'));
+    }
   } catch (e) {
     console.error('Storage error', e);
   }
@@ -44,13 +37,15 @@ function getStoredUpdates() {
 function setStoredUpdates(updates) {
   try {
     localStorage.setItem(UPDATES_KEY, JSON.stringify(updates));
-    window.dispatchEvent(new Event('realtime_location_sync'));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('realtime_location_sync'));
+    }
   } catch (e) {
     console.error('Storage error', e);
   }
 }
 
-// In-memory listeners for cross-component and cross-tab real-time sync
+// In-memory listeners for cross-component and cross-tab sync
 const listeners = new Set();
 function notifyListeners() {
   listeners.forEach((fn) => {
@@ -74,12 +69,46 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// Helper to send telemetry to serverless endpoint
+async function sendServerlessTelemetry(action, payload) {
+  try {
+    const res = await fetch('/api/telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    // silently fallback to client-side storage
+  }
+  return null;
+}
+
+// Helper to fetch telemetry from serverless endpoint
+async function fetchServerlessTelemetry() {
+  try {
+    const res = await fetch('/api/telemetry');
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        sessions: Array.isArray(data.sessions) ? data.sessions : [],
+        updates: Array.isArray(data.updates) ? data.updates : [],
+      };
+    }
+  } catch (e) {
+    // fallback
+  }
+  return { sessions: [], updates: [] };
+}
+
 export const locationService = {
   /**
    * Start a visitor session (called when candidate allows location)
    */
   async startSession({ displayName, deviceInfo, browserInfo, initialCoords }) {
-    const newSessionId = `CAND-${Date.now().toString().slice(-5)}`;
+    const newSessionId = `CAND-${Date.now().toString().slice(-6)}`;
     const nowIso = new Date().toISOString();
 
     const newSession = {
@@ -96,12 +125,14 @@ export const locationService = {
       color: '#16a34a',
     };
 
-    if (isSupabaseConfigured) {
+    // 1. Send to Supabase if configured
+    if (isSupabaseConfigured && supabase) {
       try {
         const { data: session, error } = await supabase
           .from('location_sessions')
-          .insert([
+          .upsert([
             {
+              id: newSession.id,
               display_name: newSession.display_name,
               device_info: newSession.device_info,
               browser_info: newSession.browser_info,
@@ -113,30 +144,32 @@ export const locationService = {
           .select()
           .single();
 
-        if (!error && session) {
-          if (initialCoords) {
-            await this.recordUpdate({
-              sessionId: session.id,
-              latitude: initialCoords.latitude,
-              longitude: initialCoords.longitude,
-              accuracyMeters: initialCoords.accuracyMeters,
-              resolvedAddress: initialCoords.resolvedAddress,
-              isDemo: false,
-            });
-          }
-          return session;
+        if (error) {
+          console.warn('Supabase startSession insert notice:', error.message);
         }
       } catch (err) {
-        console.warn('Supabase startSession fallback to local:', err.message);
+        console.warn('Supabase startSession error:', err.message);
       }
     }
 
-    // Local real-time persistence
+    // 2. Broadcast to /api/telemetry (guarantees cross-device sync on Vercel)
+    await sendServerlessTelemetry('startSession', {
+      session: newSession,
+      initialCoords,
+    });
+
+    // 3. Local real-time persistence
     const sessions = getStoredSessions();
-    sessions.unshift(newSession);
+    const existingIdx = sessions.findIndex((s) => s.id === newSession.id);
+    if (existingIdx >= 0) {
+      sessions[existingIdx] = { ...sessions[existingIdx], ...newSession };
+    } else {
+      sessions.unshift(newSession);
+    }
     setStoredSessions(sessions);
 
-    if (initialCoords) {
+    // 4. Record initial coordinates update
+    if (initialCoords && typeof initialCoords.latitude === 'number') {
       await this.recordUpdate({
         sessionId: newSession.id,
         latitude: initialCoords.latitude,
@@ -159,48 +192,51 @@ export const locationService = {
     const newUpdate = {
       id: `upd-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       session_id: sessionId,
-      latitude,
-      longitude,
-      accuracy_meters: accuracyMeters,
-      resolved_address: resolvedAddress || `Coordinates: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+      latitude: Number(latitude),
+      longitude: Number(longitude),
+      accuracy_meters: Number(accuracyMeters || 10),
+      resolved_address:
+        resolvedAddress || `Coordinates: ${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)}`,
       is_demo: isDemo,
       recorded_at: nowIso,
     };
 
-    if (isSupabaseConfigured) {
+    // 1. Send to Supabase if configured
+    if (isSupabaseConfigured && supabase) {
       try {
-        const { data, error } = await supabase
-          .from('location_updates')
-          .insert([
-            {
-              session_id: sessionId,
-              latitude,
-              longitude,
-              accuracy_meters: accuracyMeters,
-              resolved_address: resolvedAddress,
-              is_demo: isDemo,
-              recorded_at: nowIso,
-            },
-          ])
-          .select()
-          .single();
-
-        if (!error && data) return data;
+        const { error } = await supabase.from('location_updates').insert([
+          {
+            id: newUpdate.id,
+            session_id: sessionId,
+            latitude: newUpdate.latitude,
+            longitude: newUpdate.longitude,
+            accuracy_meters: newUpdate.accuracy_meters,
+            resolved_address: newUpdate.resolved_address,
+            is_demo: isDemo,
+            recorded_at: nowIso,
+          },
+        ]);
+        if (error) {
+          console.warn('Supabase recordUpdate notice:', error.message);
+        }
       } catch (err) {
-        console.warn('Supabase recordUpdate fallback to local:', err.message);
+        console.warn('Supabase recordUpdate error:', err.message);
       }
     }
 
-    // Local updates
+    // 2. Broadcast to /api/telemetry (cross-device sync on Vercel)
+    await sendServerlessTelemetry('recordUpdate', { update: newUpdate });
+
+    // 3. Local updates
     const updates = getStoredUpdates();
     updates.unshift(newUpdate);
     setStoredUpdates(updates);
 
-    // Also update session latest time
+    // Update session latest time
     const sessions = getStoredSessions();
     const updatedSessions = sessions.map((s) => {
       if (s.id === sessionId) {
-        return { ...s, last_active: nowIso };
+        return { ...s, last_active: nowIso, latestUpdate: newUpdate };
       }
       return s;
     });
@@ -215,7 +251,7 @@ export const locationService = {
    */
   async endSession(sessionId) {
     const nowIso = new Date().toISOString();
-    if (isSupabaseConfigured) {
+    if (isSupabaseConfigured && supabase) {
       try {
         await supabase
           .from('location_sessions')
@@ -228,6 +264,8 @@ export const locationService = {
         console.warn('Supabase endSession fallback:', err.message);
       }
     }
+
+    await sendServerlessTelemetry('endSession', { sessionId });
 
     const sessions = getStoredSessions();
     const updated = sessions.map((s) =>
@@ -242,10 +280,11 @@ export const locationService = {
    * Fetch all real-time sessions with their latest location update
    */
   async getSessionsWithLatestLocation() {
-    let sessions = [];
-    let updates = [];
+    let supabaseSessions = [];
+    let supabaseUpdates = [];
 
-    if (isSupabaseConfigured) {
+    // 1. Fetch from Supabase if configured
+    if (isSupabaseConfigured && supabase) {
       try {
         const { data: sData } = await supabase
           .from('location_sessions')
@@ -257,26 +296,46 @@ export const locationService = {
           .select('*')
           .order('recorded_at', { ascending: false });
 
-        if (sData) sessions = sData;
-        if (uData) updates = uData;
+        if (sData) supabaseSessions = sData;
+        if (uData) supabaseUpdates = uData;
       } catch (err) {
         console.warn('Supabase fetch notice:', err.message);
       }
     }
 
-    if (sessions.length === 0) {
-      sessions = getStoredSessions();
-      updates = getStoredUpdates();
-    }
+    // 2. Fetch from Vercel Serverless Endpoint (Cross-device data)
+    const serverless = await fetchServerlessTelemetry();
+
+    // 3. Fetch from LocalStorage
+    const localSessions = getStoredSessions();
+    const localUpdates = getStoredUpdates();
+
+    // 4. Merge all sources without duplication
+    const sessionMap = new Map();
+    [...localSessions, ...serverless.sessions, ...supabaseSessions].forEach((s) => {
+      if (s && s.id && !sessionMap.has(s.id)) {
+        sessionMap.set(s.id, s);
+      }
+    });
+
+    const updateMap = new Map();
+    [...localUpdates, ...serverless.updates, ...supabaseUpdates].forEach((u) => {
+      if (u && u.id && !updateMap.has(u.id)) {
+        updateMap.set(u.id, u);
+      }
+    });
+
+    const allSessions = Array.from(sessionMap.values());
+    const allUpdates = Array.from(updateMap.values());
 
     const palette = ['#16a34a', '#2563eb', '#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4'];
 
-    return sessions.map((session, index) => {
-      const sessionUpdates = updates
+    return allSessions.map((session, index) => {
+      const sessionUpdates = allUpdates
         .filter((u) => u.session_id === session.id)
         .sort((a, b) => new Date(b.recorded_at) - new Date(a.recorded_at));
 
-      const latest = sessionUpdates[0] || null;
+      const latest = sessionUpdates[0] || session.latestUpdate || null;
       const color = session.color || palette[index % palette.length];
 
       return {
@@ -291,11 +350,11 @@ export const locationService = {
   /**
    * Fetch recent real-time location updates across all sessions
    */
-  async getRecentUpdates(limit = 10) {
-    let updates = [];
-    let sessions = [];
+  async getRecentUpdates(limit = 15) {
+    let supabaseUpdates = [];
+    let supabaseSessions = [];
 
-    if (isSupabaseConfigured) {
+    if (isSupabaseConfigured && supabase) {
       try {
         const { data: uData } = await supabase
           .from('location_updates')
@@ -305,24 +364,42 @@ export const locationService = {
 
         const { data: sData } = await supabase.from('location_sessions').select('*');
 
-        if (uData) updates = uData;
-        if (sData) sessions = sData;
+        if (uData) supabaseUpdates = uData;
+        if (sData) supabaseSessions = sData;
       } catch (e) {
-        console.warn('Supabase recent updates fallback:', e.message);
+        console.warn('Supabase recent updates notice:', e.message);
       }
     }
 
-    if (updates.length === 0) {
-      updates = getStoredUpdates().slice(0, limit);
-      sessions = getStoredSessions();
-    }
+    const serverless = await fetchServerlessTelemetry();
+    const localUpdates = getStoredUpdates();
+    const localSessions = getStoredSessions();
 
-    const sessionMap = new Map(sessions.map((s) => [s.id, s]));
+    const updateMap = new Map();
+    [...localUpdates, ...serverless.updates, ...supabaseUpdates].forEach((u) => {
+      if (u && u.id && !updateMap.has(u.id)) {
+        updateMap.set(u.id, u);
+      }
+    });
 
-    return updates.map((u) => {
+    const sessionMap = new Map();
+    [...localSessions, ...serverless.sessions, ...supabaseSessions].forEach((s) => {
+      if (s && s.id && !sessionMap.has(s.id)) {
+        sessionMap.set(s.id, s);
+      }
+    });
+
+    const sortedUpdates = Array.from(updateMap.values())
+      .sort((a, b) => new Date(b.recorded_at) - new Date(a.recorded_at))
+      .slice(0, limit);
+
+    return sortedUpdates.map((u) => {
       const s = sessionMap.get(u.session_id);
       return {
         ...u,
+        latitude: Number(u.latitude),
+        longitude: Number(u.longitude),
+        accuracy_meters: Number(u.accuracy_meters || 10),
         session_name: s ? s.display_name : 'Candidate',
         device_info: s ? s.device_info : 'Web Browser',
         color: s?.color || '#16a34a',
@@ -334,7 +411,8 @@ export const locationService = {
    * Get location history for a specific session
    */
   async getSessionHistory(sessionId) {
-    if (isSupabaseConfigured) {
+    let supabaseHistory = [];
+    if (isSupabaseConfigured && supabase) {
       try {
         const { data } = await supabase
           .from('location_updates')
@@ -342,35 +420,39 @@ export const locationService = {
           .eq('session_id', sessionId)
           .order('recorded_at', { ascending: false });
 
-        if (data) return data;
+        if (data) supabaseHistory = data;
       } catch (e) {
-        console.warn('Supabase history fetch fallback:', e.message);
+        console.warn('Supabase history fetch notice:', e.message);
       }
     }
 
-    const updates = getStoredUpdates();
-    return updates
-      .filter((u) => u.session_id === sessionId)
-      .sort((a, b) => new Date(b.recorded_at) - new Date(a.recorded_at));
-  },
+    const serverless = await fetchServerlessTelemetry();
+    const localUpdates = getStoredUpdates();
 
-  /**
-   * Delete all data older than retention period
-   */
-  async cleanupOldHistory(days) {
-    const cutoff = new Date(Date.now() - days * 86400000).toISOString();
-    const updates = getStoredUpdates();
-    const remaining = updates.filter((u) => new Date(u.recorded_at).toISOString() >= cutoff);
-    const count = updates.length - remaining.length;
-    setStoredUpdates(remaining);
-    notifyListeners();
-    return count;
+    const updateMap = new Map();
+    [...localUpdates, ...serverless.updates, ...supabaseHistory].forEach((u) => {
+      if (u && u.session_id === sessionId && !updateMap.has(u.id)) {
+        updateMap.set(u.id, u);
+      }
+    });
+
+    return Array.from(updateMap.values()).sort(
+      (a, b) => new Date(b.recorded_at) - new Date(a.recorded_at)
+    );
   },
 
   /**
    * Delete a specific session
    */
   async deleteSession(sessionId) {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('location_sessions').delete().eq('id', sessionId);
+      } catch (e) {
+        // ignore
+      }
+    }
+
     const sessions = getStoredSessions().filter((s) => s.id !== sessionId);
     const updates = getStoredUpdates().filter((u) => u.session_id !== sessionId);
     setStoredSessions(sessions);
@@ -382,7 +464,16 @@ export const locationService = {
   /**
    * Clear all sessions
    */
-  clearAllData() {
+  async clearAllData() {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from('location_updates').delete().neq('id', 'keep_none');
+        await supabase.from('location_sessions').delete().neq('id', 'keep_none');
+      } catch (e) {
+        // ignore
+      }
+    }
+    await sendServerlessTelemetry('clearAll', {});
     setStoredSessions([]);
     setStoredUpdates([]);
     notifyListeners();
@@ -395,22 +486,30 @@ export const locationService = {
     listeners.add(callback);
 
     let supabaseChannel = null;
-    if (isSupabaseConfigured) {
-      supabaseChannel = supabase
-        .channel('public:realtime_updates')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'location_updates' }, () => {
-          callback();
-        })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'location_sessions' }, () => {
-          callback();
-        })
-        .subscribe();
+    if (isSupabaseConfigured && supabase) {
+      try {
+        supabaseChannel = supabase
+          .channel('public:telemetry_feed')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'location_updates' }, () => {
+            callback();
+          })
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'location_sessions' }, () => {
+            callback();
+          })
+          .subscribe();
+      } catch (e) {
+        console.warn('Supabase realtime subscription notice:', e.message);
+      }
     }
 
     return () => {
       listeners.delete(callback);
-      if (supabaseChannel) {
-        supabase.removeChannel(supabaseChannel);
+      if (supabaseChannel && supabase) {
+        try {
+          supabase.removeChannel(supabaseChannel);
+        } catch (e) {
+          // ignore
+        }
       }
     };
   },

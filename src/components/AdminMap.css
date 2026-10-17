@@ -19,12 +19,20 @@
   z-index: 1;
 }
 
+/* Reset default Leaflet divIcon box to transparent */
+.custom-leaflet-div-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
 /* Custom Marker Styling */
-.map-marker-container {
+.map-marker-wrapper {
   display: flex;
   flex-direction: column;
   align-items: center;
-  transform: translate(-50%, -100%);
+  justify-content: flex-end;
+  width: 160px;
+  height: 56px;
   cursor: pointer;
   pointer-events: auto;
 }
@@ -33,7 +41,7 @@
   background: #ffffff;
   padding: 4px 10px;
   border-radius: 20px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   font-size: 11px;
   font-weight: 700;
   color: #0f172a;
@@ -42,19 +50,43 @@
   gap: 6px;
   white-space: nowrap;
   border: 1px solid rgba(0, 0, 0, 0.08);
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   transition: all 0.2s ease;
 }
 
-.map-marker-pill:hover {
-  transform: scale(1.06);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+.map-marker-wrapper:hover .map-marker-pill {
+  transform: scale(1.05);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
 }
 
-.map-marker-dot {
-  width: 7px;
-  height: 7px;
+.map-marker-name {
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-marker-pulse-dot {
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.3);
+  animation: marker-dot-pulse 2s infinite;
+}
+
+@keyframes marker-dot-pulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(22, 163, 74, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(22, 163, 74, 0);
+  }
 }
 
 .map-marker-time {
@@ -63,7 +95,7 @@
   font-weight: 500;
 }
 
-.map-marker-pin-body {
+.map-marker-pin {
   width: 22px;
   height: 22px;
   border-radius: 50% 50% 50% 0;
@@ -71,12 +103,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
   border: 2px solid #ffffff;
+  margin-bottom: 2px;
 }
 
-.map-marker-pin-body::after {
-  content: '';
+.map-marker-pin-inner {
   width: 7px;
   height: 7px;
   background: #ffffff;
@@ -84,12 +116,27 @@
   transform: rotate(45deg);
 }
 
+/* Custom Tooltip */
+.custom-leaflet-tooltip {
+  background: #0f172a !important;
+  color: #ffffff !important;
+  border-radius: 8px !important;
+  border: none !important;
+  padding: 6px 10px !important;
+  font-size: 11px !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25) !important;
+}
+
+.custom-leaflet-tooltip::before {
+  border-top-color: #0f172a !important;
+}
+
 /* Leaflet Popup Styling */
 .leaflet-popup-content-wrapper {
   border-radius: 16px !important;
-  box-shadow: 0 10px 25px -3px rgba(0, 0, 0, 0.15) !important;
+  box-shadow: 0 12px 30px -3px rgba(0, 0, 0, 0.2) !important;
   padding: 4px !important;
-  font-family: var(--font-sans) !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
 }
 
 .leaflet-popup-content {
@@ -100,15 +147,18 @@
 .map-popup-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-width: 190px;
+  gap: 8px;
+  min-width: 230px;
+  max-width: 290px;
 }
 
 .map-popup-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #f1f5f9;
 }
 
 .map-popup-title {
@@ -117,11 +167,18 @@
   color: #0f172a;
 }
 
+.map-popup-id {
+  font-size: 10px;
+  color: #64748b;
+  font-family: monospace;
+}
+
 .map-popup-badge {
   font-size: 10px;
   font-weight: 700;
   padding: 2px 7px;
   border-radius: 12px;
+  white-space: nowrap;
 }
 
 .map-popup-badge.demo {
@@ -134,40 +191,97 @@
   color: #15803d;
 }
 
-.map-popup-address {
+.map-popup-field {
   font-size: 12px;
   color: #334155;
-  font-weight: 500;
+  line-height: 1.35;
 }
 
-.map-popup-coords {
-  font-size: 11px;
+.map-field-label {
+  font-weight: 600;
   color: #64748b;
-  font-family: monospace;
+  margin-right: 4px;
 }
 
-.map-popup-meta {
+.map-popup-coords-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 7px 10px;
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 8px;
+}
+
+.map-coords-text {
+  font-size: 12px;
+  font-family: monospace;
+  color: #0f172a;
+}
+
+.map-coords-link {
   font-size: 11px;
+  color: #2563eb;
+  font-weight: 600;
+  text-decoration: none;
+  background: #eff6ff;
+  padding: 3px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.map-coords-link:hover {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.map-popup-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  background: #f8fafc;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.map-grid-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.map-grid-label {
   color: #64748b;
-  margin-top: 4px;
-  padding-top: 6px;
-  border-top: 1px solid #f1f5f9;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.map-grid-val {
+  color: #1e293b;
+  font-weight: 600;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .map-popup-btn {
-  margin-top: 6px;
+  margin-top: 4px;
   width: 100%;
   background: #f0fdf4;
   color: #16a34a;
   border: 1px solid #bbf7d0;
-  padding: 5px;
+  padding: 6px;
   border-radius: 8px;
   font-size: 11px;
   font-weight: 600;
   text-align: center;
-  transition: all var(--transition-fast);
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
 .map-popup-btn:hover {
@@ -175,7 +289,7 @@
   color: #ffffff;
 }
 
-/* Map controls */
+/* Map overlay controls */
 .admin-map-overlay-controls {
   position: absolute;
   top: 12px;
@@ -189,15 +303,16 @@
   background: #ffffff;
   color: #0f172a;
   border: 1px solid #e2e8f0;
-  padding: 6px 10px;
+  padding: 6px 12px;
   border-radius: 8px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
   font-size: 12px;
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 5px;
-  transition: all var(--transition-fast);
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
 .map-overlay-btn:hover {
