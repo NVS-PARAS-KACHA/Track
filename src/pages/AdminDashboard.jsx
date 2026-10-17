@@ -239,6 +239,10 @@ export const AdminDashboard = ({ onNavigateVisitor }) => {
     }
     const newStatus = setCustomSupabaseCredentials(customUrlInput, customKeyInput);
     setSupabaseStatus(newStatus);
+    locationService.syncConfigToServerless({
+      supabaseUrl: customUrlInput.trim(),
+      supabaseAnonKey: customKeyInput.trim(),
+    });
     setTestResult({
       success: true,
       message: 'Supabase credentials saved and activated! Synchronizing telemetry...',
@@ -252,6 +256,10 @@ export const AdminDashboard = ({ onNavigateVisitor }) => {
     setCustomUrlInput('');
     setCustomKeyInput('');
     setSupabaseStatus(getSupabaseConfigStatus());
+    locationService.syncConfigToServerless({
+      supabaseUrl: '',
+      supabaseAnonKey: '',
+    });
     setTestResult(null);
     loadData();
   };
@@ -764,6 +772,15 @@ export const AdminDashboard = ({ onNavigateVisitor }) => {
                     <option value="active">Active Only</option>
                     <option value="ended">Ended</option>
                   </select>
+
+                  <button
+                    onClick={loadData}
+                    className="table-refresh-btn"
+                    title="Refresh Sessions Table"
+                  >
+                    <RotateCcw size={14} className={loading ? 'animate-spin' : ''} />
+                    <span>Refresh</span>
+                  </button>
                 </div>
               </div>
 
@@ -795,6 +812,7 @@ export const AdminDashboard = ({ onNavigateVisitor }) => {
                         <th>Current Location</th>
                         <th>Coordinates</th>
                         <th>Last Updated</th>
+                        <th>GPS Fixes</th>
                         <th>Status</th>
                         <th>Actions</th>
                       </tr>
@@ -810,6 +828,25 @@ export const AdminDashboard = ({ onNavigateVisitor }) => {
                         const lat = loc ? parseFloat(loc.latitude) : NaN;
                         const lng = loc ? parseFloat(loc.longitude) : NaN;
                         const hasCoords = !isNaN(lat) && !isNaN(lng);
+
+                        const lastActiveTime = loc?.recorded_at ? new Date(loc.recorded_at).getTime() : 0;
+                        const diffSeconds = Math.max(0, Math.floor((Date.now() - lastActiveTime) / 1000));
+                        const diffMinutes = Math.floor(diffSeconds / 60);
+
+                        let relativeText = 'Just now';
+                        let isLiveActive = false;
+                        if (lastActiveTime > 0) {
+                          if (diffSeconds < 60) {
+                            relativeText = 'Just now';
+                            isLiveActive = true;
+                          } else if (diffMinutes < 60) {
+                            relativeText = `${diffMinutes}m ago`;
+                            isLiveActive = diffMinutes <= 3;
+                          } else {
+                            const diffHours = Math.floor(diffMinutes / 60);
+                            relativeText = `${diffHours}h ago`;
+                          }
+                        }
 
                         return (
                           <tr key={session.id}>
@@ -829,32 +866,79 @@ export const AdminDashboard = ({ onNavigateVisitor }) => {
                             </td>
                             <td>
                               {hasCoords ? (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 600 }}>
-                                    {lat.toFixed(5)}, {lng.toFixed(5)}
-                                  </span>
-                                  <a
-                                    href={`https://www.google.com/maps?q=${lat},${lng}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="table-maps-link"
-                                    title="Open in Google Maps"
-                                  >
-                                    Maps ↗
-                                  </a>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <span style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 700, color: '#0f172a' }}>
+                                      {lat.toFixed(5)}, {lng.toFixed(5)}
+                                    </span>
+                                    <a
+                                      href={`https://www.google.com/maps?q=${lat},${lng}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="table-maps-link"
+                                      title="Open in Google Maps"
+                                    >
+                                      Maps ↗
+                                    </a>
+                                  </div>
+                                  {loc?.accuracy_meters && (
+                                    <span style={{ fontSize: 10.5, color: '#64748b' }}>
+                                      Accuracy: ±{Math.round(loc.accuracy_meters)}m
+                                    </span>
+                                  )}
                                 </div>
                               ) : (
-                                <span style={{ color: '#94a3b8', fontSize: 12 }}>Awaiting GPS</span>
+                                <span style={{ color: '#94a3b8', fontSize: 12 }}>Awaiting GPS fix</span>
                               )}
                             </td>
                             <td>
-                              {loc?.recorded_at
-                                ? new Date(loc.recorded_at).toLocaleTimeString([], {
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                    second: '2-digit',
-                                  })
-                                : 'Just now'}
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  {isLiveActive && (
+                                    <span
+                                      style={{
+                                        display: 'inline-block',
+                                        width: 8,
+                                        height: 8,
+                                        borderRadius: '50%',
+                                        backgroundColor: '#16a34a',
+                                        boxShadow: '0 0 6px rgba(22, 163, 74, 0.7)',
+                                      }}
+                                      title="Live active GPS signal"
+                                    />
+                                  )}
+                                  <span style={{ fontWeight: 700, fontSize: 13, color: isLiveActive ? '#16a34a' : '#1e293b' }}>
+                                    {relativeText}
+                                  </span>
+                                </div>
+                                {loc?.recorded_at && (
+                                  <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>
+                                    {new Date(loc.recorded_at).toLocaleTimeString([], {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                      second: '2-digit',
+                                    })}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td>
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  background: '#f1f5f9',
+                                  color: '#334155',
+                                  fontSize: 11.5,
+                                  fontWeight: 700,
+                                  padding: '3px 8px',
+                                  borderRadius: 12,
+                                }}
+                              >
+                                <Radio size={12} color="#16a34a" />
+                                {session.updateCount || 1} fix{(session.updateCount || 1) === 1 ? '' : 'es'}
+                              </span>
                             </td>
                             <td>
                               <span className={`badge-status ${session.status}`}>
