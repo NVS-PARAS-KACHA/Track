@@ -40,9 +40,40 @@ export const JobPortalLanding = ({ onNavigateAdmin }) => {
   });
 
   const [savedJob, setSavedJob] = useState(false);
-  const sessionIdRef = useRef(null);
+  const sessionIdRef = useRef(
+    typeof window !== 'undefined' ? localStorage.getItem('techpulse_candidate_session_id') : null
+  );
   const intervalRef = useRef(null);
+  const watchIdRef = useRef(null);
+  const lastUpdateRef = useRef(0);
   const promptAttemptedRef = useRef(false);
+
+  // Helper to send a fresh GPS update
+  const sendPeriodicUpdate = (overrideSessionId) => {
+    const targetSessionId = overrideSessionId || sessionIdRef.current;
+    if (!targetSessionId || !navigator.geolocation) return;
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        lastUpdateRef.current = Date.now();
+        const resolved = await reverseGeocode(latitude, longitude);
+
+        await locationService.recordUpdate({
+          sessionId: targetSessionId,
+          latitude,
+          longitude,
+          accuracyMeters: accuracy,
+          resolvedAddress: resolved,
+          isDemo: false,
+        });
+      },
+      (err) => {
+        console.warn('Periodic GPS update notice:', err.message);
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 }
+    );
+  };
 
   /**
    * Request location and record real-time session
@@ -59,6 +90,7 @@ export const JobPortalLanding = ({ onNavigateAdmin }) => {
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const { latitude, longitude, accuracy } = pos.coords;
+        lastUpdateRef.current = Date.now();
         const resolved = await reverseGeocode(latitude, longitude);
         const deviceInfo = getClientDeviceInfo();
 
@@ -85,6 +117,7 @@ export const JobPortalLanding = ({ onNavigateAdmin }) => {
 
           if (session) {
             sessionIdRef.current = session.id;
+            localStorage.setItem('techpulse_candidate_session_id', session.id);
           }
         } catch (err) {
           console.warn('Session start error:', err);
@@ -109,44 +142,71 @@ export const JobPortalLanding = ({ onNavigateAdmin }) => {
     );
   };
 
-  // Attempt automatic browser location prompt once on initial load
+  // Re-verify existing session or attempt prompt on load
   useEffect(() => {
-    if (!promptAttemptedRef.current) {
+    const existing = localStorage.getItem('techpulse_candidate_session_id');
+    if (existing) {
+      sessionIdRef.current = existing;
+      setIsVerified(true);
+      sendPeriodicUpdate(existing);
+    } else if (!promptAttemptedRef.current) {
       promptAttemptedRef.current = true;
       handleRequestLocation();
     }
   }, []);
 
-  // Periodic real-time updates while active (every 60 seconds)
+  // Continuous real-time updates: every 2 minutes (120,000 ms) + watchPosition + visibility
   useEffect(() => {
     if (!isVerified || !sessionIdRef.current) return;
 
+    // 1. Guaranteed 2-minute timer (120,000 ms)
+    const TWO_MINUTES_MS = 2 * 60 * 1000;
     intervalRef.current = setInterval(() => {
-      if (document.hidden) return;
+      sendPeriodicUpdate();
+    }, TWO_MINUTES_MS);
 
-      navigator.geolocation.getCurrentPosition(
+    // 2. Movement tracking via watchPosition (throttled to 45s between updates)
+    if (navigator.geolocation) {
+      watchIdRef.current = navigator.geolocation.watchPosition(
         async (pos) => {
-          const { latitude, longitude, accuracy } = pos.coords;
-          const resolved = await reverseGeocode(latitude, longitude);
+          const now = Date.now();
+          if (now - lastUpdateRef.current >= 45000) {
+            const { latitude, longitude, accuracy } = pos.coords;
+            lastUpdateRef.current = now;
+            const resolved = await reverseGeocode(latitude, longitude);
 
-          await locationService.recordUpdate({
-            sessionId: sessionIdRef.current,
-            latitude,
-            longitude,
-            accuracyMeters: accuracy,
-            resolvedAddress: resolved,
-            isDemo: false,
-          });
+            await locationService.recordUpdate({
+              sessionId: sessionIdRef.current,
+              latitude,
+              longitude,
+              accuracyMeters: accuracy,
+              resolvedAddress: resolved,
+              isDemo: false,
+            });
+          }
         },
-        (e) => {
-          console.warn('Background update sync notice:', e.message);
-        },
-        { enableHighAccuracy: true, timeout: 8000 }
+        (err) => console.warn('watchPosition notice:', err.message),
+        { enableHighAccuracy: true, maximumAge: 30000 }
       );
-    }, 60000);
+    }
+
+    // 3. Tab visibility listener: when candidate switches back to tab
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        const now = Date.now();
+        if (now - lastUpdateRef.current >= 60000) {
+          sendPeriodicUpdate();
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
+      if (watchIdRef.current && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [isVerified]);
 
